@@ -38,6 +38,20 @@ func TestIsRetryableRenderError(t *testing.T) {
 			err:  errors.New("kustomize build failed"),
 			want: false,
 		},
+		{
+			// abortReason output for a deterministic server rejection: the
+			// real status (Unknown) replaces the bare io.EOF in the chain and
+			// must NOT be retried.
+			name: "wrapped Unknown status from aborted stream",
+			err:  fmt.Errorf("failed to stream tarball: %w", fmt.Errorf("stream aborted: %w (send: %v)", status.Error(codes.Unknown, "error receiving tgz file: file exceeded max size of 100000000 bytes"), io.EOF)),
+			want: false,
+		},
+		{
+			// abortReason output for a transient transport abort stays retryable.
+			name: "wrapped Unavailable status from aborted stream",
+			err:  fmt.Errorf("failed to stream tarball: %w", fmt.Errorf("stream aborted: %w (send: %v)", status.Error(codes.Unavailable, "transport is closing"), io.EOF)),
+			want: true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

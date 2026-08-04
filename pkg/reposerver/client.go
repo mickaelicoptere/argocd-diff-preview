@@ -282,17 +282,21 @@ func (c *Client) GenerateManifests(ctx context.Context, appDir string, request *
 	return nil, fmt.Errorf("repo server unavailable after %d attempts: %w", maxGenerateRetries, lastErr)
 }
 
-// abortReason augments a Send error: when a stream has been aborted, Send
-// returns a bare io.EOF and the real status is only surfaced by CloseAndRecv.
-// The io.EOF stays in the wrap chain so isRetryableRenderError still matches.
+// abortReason resolves a Send error to the stream's real failure: when a
+// stream has been aborted, Send returns a bare io.EOF and the actual status is
+// only surfaced by CloseAndRecv. Preferring that status in the wrap chain lets
+// isRetryableRenderError distinguish transient transport failures (retryable)
+// from deterministic server rejections such as tarball size limits, which
+// must fail fast instead of burning retries.
 func abortReason(stream repoapiclient.RepoServerService_GenerateManifestWithFilesClient, sendErr error) error {
 	if !errors.Is(sendErr, io.EOF) {
 		return sendErr
 	}
-	if _, recvErr := stream.CloseAndRecv(); recvErr != nil && !errors.Is(recvErr, io.EOF) {
-		return fmt.Errorf("%w (stream aborted: %v)", sendErr, recvErr)
+	_, recvErr := stream.CloseAndRecv()
+	if recvErr == nil || errors.Is(recvErr, io.EOF) {
+		return sendErr // no better information; io.EOF stays retryable
 	}
-	return sendErr
+	return fmt.Errorf("stream aborted: %w (send: %v)", recvErr, sendErr)
 }
 
 // generateManifestsOnce performs a single GenerateManifestWithFiles call.

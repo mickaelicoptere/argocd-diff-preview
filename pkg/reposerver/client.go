@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -33,12 +34,26 @@ const (
 	maxGRPCMessageSize = 100 * 1024 * 1024
 
 	// maxGenerateRetries is the maximum number of attempts for GenerateManifests
-	// before giving up. Retries are triggered by transient gRPC Unavailable errors
-	// (e.g. EOF on the port-forward tunnel under high concurrency).
+	// before giving up. Retries are triggered by transient transport errors
+	// (gRPC Unavailable, or EOF on the port-forward tunnel under high
+	// concurrency).
 	maxGenerateRetries = 5
 	// generateRetryBaseDelay is the initial backoff delay before the first retry.
 	generateRetryBaseDelay = 500 * time.Millisecond
 )
+
+// isRetryableRenderError reports whether a GenerateManifests error is a
+// transient transport failure worth retrying. Besides gRPC Unavailable, a
+// stream.Send on an aborted stream returns a bare io.EOF (the real status is
+// only available via CloseAndRecv), so a wrapped io.EOF is transient too —
+// typical when many concurrent streams share one port-forward tunnel.
+func isRetryableRenderError(err error) bool {
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	st, ok := status.FromError(err)
+	return ok && st.Code() == codes.Unavailable
+}
 
 // Client is a gRPC client for the Argo CD repo server.
 // It manages an optional port-forward to the repo server so that the caller
@@ -249,14 +264,14 @@ func (c *Client) GenerateManifests(ctx context.Context, appDir string, request *
 			return manifests, nil
 		}
 
-		// Only retry on Unavailable (connection/transport errors).
-		if st, ok := status.FromError(err); ok && st.Code() == codes.Unavailable {
+		// Only retry transient transport errors.
+		if isRetryableRenderError(err) {
 			lastErr = err
 			log.Warn().
 				Str("app", request.AppName).
 				Int("attempt", attempt).
 				Err(err).
-				Msg("⚠️ Transient gRPC Unavailable error from repo server; will retry")
+				Msg("⚠️ Transient transport error from repo server; will retry")
 			continue
 		}
 
@@ -265,6 +280,19 @@ func (c *Client) GenerateManifests(ctx context.Context, appDir string, request *
 	}
 
 	return nil, fmt.Errorf("repo server unavailable after %d attempts: %w", maxGenerateRetries, lastErr)
+}
+
+// abortReason augments a Send error: when a stream has been aborted, Send
+// returns a bare io.EOF and the real status is only surfaced by CloseAndRecv.
+// The io.EOF stays in the wrap chain so isRetryableRenderError still matches.
+func abortReason(stream repoapiclient.RepoServerService_GenerateManifestWithFilesClient, sendErr error) error {
+	if !errors.Is(sendErr, io.EOF) {
+		return sendErr
+	}
+	if _, recvErr := stream.CloseAndRecv(); recvErr != nil && !errors.Is(recvErr, io.EOF) {
+		return fmt.Errorf("%w (stream aborted: %v)", sendErr, recvErr)
+	}
+	return sendErr
 }
 
 // generateManifestsOnce performs a single GenerateManifestWithFiles call.
@@ -299,7 +327,7 @@ func (c *Client) generateManifestsOnce(ctx context.Context, tgzFile *os.File, ch
 			Request: request,
 		},
 	}); err != nil {
-		return nil, fmt.Errorf("failed to send manifest request: %w", err)
+		return nil, fmt.Errorf("failed to send manifest request: %w", abortReason(stream, err))
 	}
 
 	// 2. Send the tarball checksum.
@@ -311,13 +339,13 @@ func (c *Client) generateManifestsOnce(ctx context.Context, tgzFile *os.File, ch
 			},
 		},
 	}); err != nil {
-		return nil, fmt.Errorf("failed to send file metadata: %w", err)
+		return nil, fmt.Errorf("failed to send file metadata: %w", abortReason(stream, err))
 	}
 
 	// 3. Stream the tarball contents in 1 KiB chunks.
 	log.Debug().Str("app", request.AppName).Msg("Streaming tarball to repo server")
 	if err := sendFileChunks(ctx, stream, tgzFile); err != nil {
-		return nil, fmt.Errorf("failed to stream tarball: %w", err)
+		return nil, fmt.Errorf("failed to stream tarball: %w", abortReason(stream, err))
 	}
 
 	// 4. Signal that we're done and receive the rendered manifests.
@@ -387,13 +415,13 @@ func (c *Client) GenerateManifestsRemote(ctx context.Context, request *repoapicl
 			return response.Manifests, nil
 		}
 
-		if st, ok := status.FromError(err); ok && st.Code() == codes.Unavailable {
+		if isRetryableRenderError(err) {
 			lastErr = err
 			log.Warn().
 				Str("app", request.AppName).
 				Int("attempt", attempt).
 				Err(err).
-				Msg("⚠️ Transient gRPC Unavailable error from repo server; will retry")
+				Msg("⚠️ Transient transport error from repo server; will retry")
 			continue
 		}
 

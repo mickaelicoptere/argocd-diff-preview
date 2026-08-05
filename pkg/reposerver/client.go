@@ -33,20 +33,15 @@ const (
 	// maxGRPCMessageSize is the maximum message size for gRPC calls (100 MB).
 	maxGRPCMessageSize = 100 * 1024 * 1024
 
-	// maxGenerateRetries is the maximum number of attempts for GenerateManifests
-	// before giving up. Retries are triggered by transient transport errors
-	// (gRPC Unavailable, or EOF on the port-forward tunnel under high
-	// concurrency).
+	// maxGenerateRetries is the maximum number of attempts for GenerateManifests before giving up.
+	// Retries are triggered by transient transport errors (gRPC Unavailable, or EOF on the port-forward tunnel under high concurrency).
 	maxGenerateRetries = 5
 	// generateRetryBaseDelay is the initial backoff delay before the first retry.
 	generateRetryBaseDelay = 500 * time.Millisecond
 )
 
-// isRetryableRenderError reports whether a GenerateManifests error is a
-// transient transport failure worth retrying. Besides gRPC Unavailable, a
-// stream.Send on an aborted stream returns a bare io.EOF (the real status is
-// only available via CloseAndRecv), so a wrapped io.EOF is transient too —
-// typical when many concurrent streams share one port-forward tunnel.
+// isRetryableRenderError reports whether an error is a transient transport
+// failure worth retrying: gRPC Unavailable, or a bare io.EOF from Send on an aborted stream whose status could not be recovered.
 func isRetryableRenderError(err error) bool {
 	if errors.Is(err, io.EOF) {
 		return true
@@ -282,12 +277,8 @@ func (c *Client) GenerateManifests(ctx context.Context, appDir string, request *
 	return nil, fmt.Errorf("repo server unavailable after %d attempts: %w", maxGenerateRetries, lastErr)
 }
 
-// abortReason resolves a Send error to the stream's real failure: when a
-// stream has been aborted, Send returns a bare io.EOF and the actual status is
-// only surfaced by CloseAndRecv. Preferring that status in the wrap chain lets
-// isRetryableRenderError distinguish transient transport failures (retryable)
-// from deterministic server rejections such as tarball size limits, which
-// must fail fast instead of burning retries.
+// abortReason resolves a Send error to the stream's real failure:
+// Send on an aborted stream returns a bare io.EOF, and the actual status (which decides retryability) is only surfaced by CloseAndRecv.
 func abortReason(stream repoapiclient.RepoServerService_GenerateManifestWithFilesClient, sendErr error) error {
 	if !errors.Is(sendErr, io.EOF) {
 		return sendErr

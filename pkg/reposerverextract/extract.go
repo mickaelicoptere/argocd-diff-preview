@@ -103,11 +103,8 @@ func RenderApplicationsFromBothBranches(
 		return nil, nil, time.Since(startTime), fmt.Errorf("failed to get server version: %w", err)
 	}
 
-	// Argo CD's API server injects the global kustomize build options from
-	// argocd-cm into every repo-server request; mirror that here, because the
-	// repo server never reads the ConfigMap itself. Without this, options like
-	// --load-restrictor LoadRestrictionsNone are silently dropped and
-	// kustomizations referencing files outside their directory fail to render.
+	// Mirror Argo CD's API server: pass the global kustomize build options from argocd-cm on every request;
+	// the repo server never reads the ConfigMap.
 	kustomizeBuildOptions, err := argocd.K8sClient.GetConfigMapValue(argocd.Namespace, "argocd-cm", "kustomize.buildOptions")
 	if err != nil {
 		return nil, nil, time.Since(startTime), fmt.Errorf("failed to get kustomize build options from argocd-cm: %w", err)
@@ -738,12 +735,20 @@ func buildManifestRequestForSource(
 		}
 	}
 
-	// Copy the content source directory into the temp tree.
+	// Kustomize sources can reference files outside their own directory, so
+	// stage the whole branch folder for them (as the no-refs fast path does).
 	srcContentDir := filepath.Join(branchFolder, primarySource.Path)
-	dstContentDir := filepath.Join(tempDir, primarySource.Path)
-	if err := copyDir(srcContentDir, dstContentDir); err != nil {
-		cleanup()
-		return nil, "", nil, fmt.Errorf("failed to copy content source dir %q: %w", srcContentDir, err)
+	if isKustomizeSource(srcContentDir) {
+		if err := copyDir(branchFolder, tempDir); err != nil {
+			cleanup()
+			return nil, "", nil, fmt.Errorf("failed to copy branch folder %q: %w", branchFolder, err)
+		}
+	} else {
+		dstContentDir := filepath.Join(tempDir, primarySource.Path)
+		if err := copyDir(srcContentDir, dstContentDir); err != nil {
+			cleanup()
+			return nil, "", nil, fmt.Errorf("failed to copy content source dir %q: %w", srcContentDir, err)
+		}
 	}
 
 	// Copy each ref source into <tempDir>/.refs/<refName>/.
@@ -1030,6 +1035,10 @@ func copyDir(src, dst string) error {
 	return filepath.Walk(src, func(srcPath string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+		// Git metadata is never part of rendered content and can be huge.
+		if info.IsDir() && info.Name() == ".git" {
+			return filepath.SkipDir
 		}
 		rel, err := filepath.Rel(src, srcPath)
 		if err != nil {

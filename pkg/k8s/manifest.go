@@ -229,8 +229,8 @@ func (c *Client) GetConfigMaps(namespace string, names ...string) (string, error
 	return string(resultString), nil
 }
 
-// GetConfigMapValue returns the value of a key in a ConfigMap, or "" when the
-// key is absent. e.g. key: "kustomize.buildOptions"
+// GetConfigMapValue returns the value of a key in a ConfigMap, or "" when the key is absent.
+// e.g. key: "kustomize.buildOptions"
 func (c *Client) GetConfigMapValue(namespace string, name string, key string) (string, error) {
 	configMapRes := schema.GroupVersionResource{Group: "", Version: "v1", Resource: "configmaps"}
 	result, err := c.clientSet.Resource(configMapRes).Namespace(namespace).Get(context.Background(), name, metav1.GetOptions{})

@@ -172,8 +172,8 @@ func RenderApplicationsFromBothBranchesWithAppOfApps(
 		return nil, nil, time.Since(startTime), fmt.Errorf("failed to get server version: %w", err)
 	}
 
-	// Mirror Argo CD's API server: the global kustomize build options from
-	// argocd-cm must be passed to the repo server on every request.
+	// Mirror Argo CD's API server: pass the global kustomize build options from argocd-cm on every request;
+	// the repo server never reads the ConfigMap.
 	kustomizeBuildOptions, err := argocd.K8sClient.GetConfigMapValue(argocd.Namespace, "argocd-cm", "kustomize.buildOptions")
 	if err != nil {
 		return nil, nil, time.Since(startTime), fmt.Errorf("failed to get kustomize build options from argocd-cm: %w", err)

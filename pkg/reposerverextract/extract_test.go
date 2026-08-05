@@ -179,10 +179,9 @@ spec:
 	assertDefaultProjectFields(t, req)
 }
 
-// Global kustomize build options from argocd-cm (e.g. --load-restrictor
-// LoadRestrictionsNone) must reach the repo server on every request, exactly
-// like Argo CD's API server passes them; the repo server never reads the
-// ConfigMap itself.
+// Global kustomize build options from argocd-cm (e.g. --load-restrictor LoadRestrictionsNone)
+// must reach the repo server on every request, exactly like Argo CD's API server passes them;
+// the repo server never reads the ConfigMap itself.
 func TestBuildManifestRequest_KustomizeBuildOptions(t *testing.T) {
 	branchFolder := makeBranchFolder(t, "apps/my-app")
 
@@ -256,7 +255,8 @@ spec:
 	require.Len(t, contentSources, 1)
 
 	req, streamDir, cleanup, err := buildManifestRequestForSource(app, contentSources[0], refSources, hasMultipleSources, branchFolder, nil, manifestRequestRenderContext{
-		repoSelector: testRepoSelector(t, "")})
+		repoSelector: testRepoSelector(t, ""),
+	})
 	require.NoError(t, err)
 	if cleanup != nil {
 		defer cleanup()
@@ -325,7 +325,8 @@ spec:
 	require.Len(t, refSources, 1)
 
 	req, streamDir, cleanup, err := buildManifestRequestForSource(app, contentSources[0], refSources, hasMultipleSources, branchFolder, nil, manifestRequestRenderContext{
-		repoSelector: testRepoSelector(t, "")})
+		repoSelector: testRepoSelector(t, ""),
+	})
 	require.NoError(t, err)
 	if cleanup != nil {
 		defer cleanup()
@@ -504,7 +505,8 @@ spec:
 	require.Len(t, refSources, 1)
 
 	req, streamDir, cleanup, err := buildManifestRequestForSource(app, contentSources[0], refSources, hasMultipleSources, branchFolder, nil, manifestRequestRenderContext{
-		repoSelector: testRepoSelector(t, "")})
+		repoSelector: testRepoSelector(t, ""),
+	})
 	require.NoError(t, err)
 	require.NotEmpty(t, streamDir, "local chart with refs must stream a temp dir")
 	defer cleanup()
@@ -528,6 +530,54 @@ spec:
 	_, statErr := os.Stat(absValueFile)
 	assert.NoError(t, statErr, "rewritten value file path %q should exist on disk", absValueFile)
 	assertDefaultProjectFields(t, req)
+}
+
+// Multi-source: a kustomize content source referencing files outside its own directory must stage the whole branch folder
+// (as the no-refs fast path does), or the escaping reference fails with "no such file or directory".
+func TestBuildManifestRequest_MultiSource_Kustomize_WithRef_StagesBranchRoot(t *testing.T) {
+	branchFolder := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(branchFolder, "clusters", "dev", "my-app"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(branchFolder, "clusters", "dev", "my-app", "kustomization.yaml"),
+		[]byte("resources:\n  - ../../../base/my-app\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(branchFolder, "base", "my-app"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(branchFolder, "base", "my-app", "kustomization.yaml"),
+		[]byte("resources: []\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(branchFolder, "values.yaml"), []byte("a: 1\n"), 0o644))
+
+	app := makeApp(t, `
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app-dev
+spec:
+  destination:
+    namespace: production
+  sources:
+    - repoURL: https://github.com/org/repo.git
+      ref: values
+      targetRevision: HEAD
+    - repoURL: https://github.com/org/repo.git
+      path: clusters/dev/my-app
+      targetRevision: HEAD
+`)
+
+	contentSources, refSources, hasMultipleSources, err := splitSources(app)
+	require.NoError(t, err)
+	require.Len(t, contentSources, 1)
+	require.Len(t, refSources, 1)
+
+	req, streamDir, cleanup, err := buildManifestRequestForSource(app, contentSources[0], refSources, hasMultipleSources, branchFolder, nil, manifestRequestRenderContext{
+		repoSelector: testRepoSelector(t, ""),
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, streamDir)
+	defer cleanup()
+
+	assert.Equal(t, "clusters/dev/my-app", req.ApplicationSource.Path)
+	_, statErr := os.Stat(filepath.Join(streamDir, "base", "my-app", "kustomization.yaml"))
+	assert.NoError(t, statErr, "files referenced outside the kustomize source dir must be staged")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -616,7 +666,8 @@ spec:
 	require.NotEmpty(t, chartSource.Chart, "should find the chart content source")
 
 	req, streamDir, cleanup, err := buildManifestRequestForSource(app, chartSource, refSources, hasMultipleSources, branchFolder, nil, manifestRequestRenderContext{
-		repoSelector: testRepoSelector(t, "")})
+		repoSelector: testRepoSelector(t, ""),
+	})
 	require.NoError(t, err)
 	if cleanup != nil {
 		defer cleanup()
@@ -677,7 +728,8 @@ spec:
 	require.Len(t, refSources, 1)
 
 	req, streamDir, cleanup, err := buildManifestRequestForSource(app, contentSources[0], refSources, hasMultipleSources, branchFolder, nil, manifestRequestRenderContext{
-		repoSelector: testRepoSelector(t, "")})
+		repoSelector: testRepoSelector(t, ""),
+	})
 	require.NoError(t, err)
 	if cleanup != nil {
 		defer cleanup()
@@ -762,7 +814,8 @@ spec:
 	// Capture requests so we can verify per-source paths without duplicate calls.
 	for i, cs := range contentSources {
 		req, streamDir, cleanup, buildErr := buildManifestRequestForSource(app, cs, refSources, hasMultipleSources, branchFolder, nil, manifestRequestRenderContext{
-			repoSelector: testRepoSelector(t, "")})
+			repoSelector: testRepoSelector(t, ""),
+		})
 		require.NoError(t, buildErr, "content source %d should not error", i)
 		if cleanup != nil {
 			defer cleanup()
@@ -819,7 +872,8 @@ spec:
 	require.Empty(t, refSources)
 
 	req, streamDir, cleanup, err := buildManifestRequestForSource(app, contentSources[0], refSources, hasMultipleSources, branchFolder, nil, manifestRequestRenderContext{
-		repoSelector: testRepoSelector(t, prRepo)})
+		repoSelector: testRepoSelector(t, prRepo),
+	})
 	require.NoError(t, err)
 	if cleanup != nil {
 		defer cleanup()
@@ -870,7 +924,8 @@ spec:
 	require.Len(t, contentSources, 1)
 
 	req, streamDir, cleanup, err := buildManifestRequestForSource(app, contentSources[0], refSources, hasMultipleSources, branchFolder, nil, manifestRequestRenderContext{
-		repoSelector: testRepoSelector(t, prRepo)})
+		repoSelector: testRepoSelector(t, prRepo),
+	})
 	require.NoError(t, err)
 	if cleanup != nil {
 		defer cleanup()
@@ -912,7 +967,8 @@ spec:
 	require.Len(t, refSources, 1)
 
 	req, streamDir, cleanup, err := buildManifestRequestForSource(app, contentSources[0], refSources, hasMultipleSources, branchFolder, nil, manifestRequestRenderContext{
-		repoSelector: testRepoSelector(t, prRepo)})
+		repoSelector: testRepoSelector(t, prRepo),
+	})
 	require.NoError(t, err)
 	if cleanup != nil {
 		defer cleanup()
@@ -1068,7 +1124,8 @@ spec:
 	require.Len(t, contentSources, 1)
 
 	req, streamDir, cleanup, err := buildManifestRequestForSource(app, contentSources[0], refSources, hasMultipleSources, branchFolder, nil, manifestRequestRenderContext{
-		repoSelector: testRepoSelector(t, prRepo)})
+		repoSelector: testRepoSelector(t, prRepo),
+	})
 	require.NoError(t, err)
 	if cleanup != nil {
 		defer cleanup()
